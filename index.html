@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scout data test</title>
+<style>
+  :root { --bg:#f3f4f1; --panel:#fff; --ink:#18222b; --muted:#5b6670; --line:#d9ddd6; --accent:#2b4c8c; --good:#2e6b45; --bad:#b3261e; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 -apple-system, "Segoe UI", Arial, sans-serif; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 24px 20px 60px; display:grid; gap:18px; }
+  h1 { margin:0; font-size:26px; }
+  p { margin:0; }
+  .muted { color:var(--muted); }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; display:grid; gap:12px; }
+  .panel h2 { margin:0; font-size:17px; }
+  label { font-weight:600; font-size:13px; display:grid; gap:4px; }
+  input, select, textarea { font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); width:100%; }
+  textarea { font-family: ui-monospace, Menlo, monospace; font-size:13px; min-height:110px; }
+  .row { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+  .row3 { display:grid; grid-template-columns: 110px 1fr; gap:12px; }
+  @media (max-width:700px){ .row, .row3 { grid-template-columns:1fr; } }
+  .btns { display:flex; flex-wrap:wrap; gap:8px; }
+  button { font:inherit; font-weight:600; padding:8px 14px; border-radius:6px; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--accent); }
+  button:disabled { opacity:.5; cursor:wait; }
+  pre { background:#0f1720; color:#e6edf3; padding:14px; border-radius:8px; overflow:auto; max-height:520px; font-size:12.5px; margin:0; white-space:pre-wrap; word-break:break-word; }
+  .status { font-weight:600; }
+  .status.ok { color:var(--good); } .status.err { color:var(--bad); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>Scout data test</h1>
+    <p class="muted">A private page for checking what PaTMa sends back. Each request uses 1 PaTMa credit. Your API key stays on Vercel and is never shown here.</p>
+  </div>
+
+  <div class="panel">
+    <h2>1. Your test password</h2>
+    <label>The SCOUT_TEST_PASSWORD you set in Vercel
+      <input id="pw" type="password" autocomplete="current-password">
+    </label>
+  </div>
+
+  <div class="panel">
+    <h2>2. Pick a test</h2>
+    <div class="btns">
+      <button type="button" class="ghost" data-preset="listings">Homes for sale near a postcode</button>
+      <button type="button" class="ghost" data-preset="byurl">One Rightmove listing by its link</button>
+      <button type="button" class="ghost" data-preset="history">Price history of a listing</button>
+      <button type="button" class="ghost" data-preset="uprn">Listings for an address (UPRN)</button>
+    </div>
+    <div class="row3">
+      <label>Method
+        <select id="method"><option>GET</option><option>POST</option></select>
+      </label>
+      <label>PaTMa path
+        <input id="path" type="text" value="/api/prospector/v1/property-listing/">
+      </label>
+    </div>
+    <label>What to send (Claude may give you new text to paste in here)
+      <textarea id="params">{ "postcode": "DN9 2AN", "radius": 1 }</textarea>
+    </label>
+    <div class="btns">
+      <button type="button" id="send">Send to PaTMa</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>3. What PaTMa sent back</h2>
+    <p class="status" id="status">Nothing sent yet.</p>
+    <pre id="out">-</pre>
+    <div class="btns">
+      <button type="button" class="ghost" id="copy">Copy result for Claude</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var presets = {
+    listings: { method: "GET", path: "/api/prospector/v1/property-listing/", params: { postcode: "DN9 2AN", radius: 1 } },
+    byurl: { method: "GET", path: "/api/prospector/v1/property-listing-by-url/", params: { url: "paste a Rightmove listing link here" } },
+    history: { method: "GET", path: "/api/prospector/v1/listing-price-history/", params: { id: "listing id from the first test" } },
+    uprn: { method: "POST", path: "/api/prospector/v0/uprn-listings/", params: { uprns: ["UPRN from an earlier test"] } }
+  };
+  var $ = function (id) { return document.getElementById(id); };
+  var lastText = "";
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-preset]"), function (b) {
+    b.addEventListener("click", function () {
+      var p = presets[b.getAttribute("data-preset")];
+      $("method").value = p.method; $("path").value = p.path;
+      $("params").value = JSON.stringify(p.params, null, 2);
+    });
+  });
+
+  $("send").addEventListener("click", function () {
+    var params;
+    try { params = JSON.parse($("params").value || "{}"); }
+    catch (e) { $("status").className = "status err"; $("status").textContent = "The 'What to send' box isn't valid. Check the brackets and quote marks."; return; }
+    var btn = this; btn.disabled = true;
+    $("status").className = "status"; $("status").textContent = "Asking PaTMa…";
+    fetch("/api/patma", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: $("pw").value, method: $("method").value, path: $("path").value.trim(), params: params })
+    }).then(function (r) { return r.json().then(function (j) { return { http: r.status, j: j }; }); })
+      .then(function (x) {
+        var j = x.j;
+        var ok = j && j.status >= 200 && j.status < 300;
+        $("status").className = "status " + (ok ? "ok" : "err");
+        $("status").textContent = j.error ? j.error : ("PaTMa replied with status " + j.status + (ok ? " (success)" : "") + ". Sign-in style used: " + j.authFormat + ".");
+        lastText = JSON.stringify(j, null, 2);
+        $("out").textContent = lastText.length > 60000 ? lastText.slice(0, 60000) + "\n… (cut short)" : lastText;
+      })
+      .catch(function (e) { $("status").className = "status err"; $("status").textContent = "Couldn't reach the test engine: " + e.message; })
+      .then(function () { btn.disabled = false; });
+  });
+
+  $("copy").addEventListener("click", function () {
+    var btn = this, txt = lastText.slice(0, 15000);
+    if (!txt) return;
+    navigator.clipboard.writeText(txt).then(function () { btn.textContent = "Copied"; }, function () { btn.textContent = "Copy failed, select the text instead"; })
+      .then(function () { setTimeout(function () { btn.textContent = "Copy result for Claude"; }, 1800); });
+  });
+})();
+</script>
+</body>
+</html>
