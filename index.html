@@ -27,6 +27,14 @@
   pre { background:#0f1720; color:#e6edf3; padding:14px; border-radius:8px; overflow:auto; max-height:520px; font-size:12.5px; margin:0; white-space:pre-wrap; word-break:break-word; }
   .status { font-weight:600; }
   .status.ok { color:var(--good); } .status.err { color:var(--bad); }
+  .stats { display:flex; flex-wrap:wrap; gap:10px; }
+  .stat { border:1px solid var(--line); border-radius:8px; padding:8px 12px; background:var(--bg); }
+  .stat b { display:block; font-size:22px; }
+  .tw { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; }
+  td.miss { color:var(--bad); }
 </style>
 </head>
 <body>
@@ -60,7 +68,7 @@
       </label>
     </div>
     <label>What to send (Claude may give you new text to paste in here)
-      <textarea id="params">{ "postcode": "DN9 2AN", "radius": 1 }</textarea>
+      <textarea id="params">{ "postcode": "DN9 2AN", "radius": 1, "include_auction": false, "include_retirement": false, "include_shared_ownership": false }</textarea>
     </label>
     <div class="btns">
       <button type="button" id="send">Send to PaTMa</button>
@@ -70,23 +78,71 @@
   <div class="panel">
     <h2>3. What PaTMa sent back</h2>
     <p class="status" id="status">Nothing sent yet.</p>
-    <pre id="out">-</pre>
+    <div id="summary"></div>
     <div class="btns">
-      <button type="button" class="ghost" id="copy">Copy result for Claude</button>
+      <button type="button" id="copy">Copy summary for Claude</button>
+      <button type="button" class="ghost" id="copyRaw">Copy full reply</button>
     </div>
+    <details><summary class="muted" style="cursor:pointer;">Show PaTMa's full reply</summary>
+      <pre id="out">-</pre>
+    </details>
   </div>
 </div>
 
 <script>
 (function () {
   var presets = {
-    listings: { method: "GET", path: "/api/prospector/v1/property-listing/", params: { postcode: "DN9 2AN", radius: 1 } },
+    listings: { method: "GET", path: "/api/prospector/v1/property-listing/", params: { postcode: "DN9 2AN", radius: 1, include_auction: false, include_retirement: false, include_shared_ownership: false } },
     byurl: { method: "GET", path: "/api/prospector/v1/property-listing-by-url/", params: { url: "paste a Rightmove listing link here" } },
     history: { method: "GET", path: "/api/prospector/v1/listing-price-history/", params: { id: "listing id from the first test" } },
     uprn: { method: "POST", path: "/api/prospector/v0/uprn-listings/", params: { uprns: ["UPRN from an earlier test"] } }
   };
   var $ = function (id) { return document.getElementById(id); };
-  var lastText = "";
+  var lastText = "", lastSummary = "";
+
+  function money(n) { return n == null ? "" : "£" + Number(n).toLocaleString("en-GB"); }
+  function esc(t) { return String(t == null ? "" : t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+
+  // Turn a listings reply into a short summary: one line per home, no photos or descriptions
+  function summarise(j) {
+    var d = j && j.data && j.data.data;
+    if (!d || !Array.isArray(d.available_results)) return null;
+    var rows = d.available_results.map(function (r) {
+      var h = (r.price_history || []).slice().sort(function (a, b) { return a.date_created < b.date_created ? -1 : 1; });
+      var first = h.filter(function (x) { return x.new_asking_price != null; })[0];
+      var cuts = h.filter(function (x) { return x.old_asking_price != null && x.new_asking_price != null && x.new_asking_price < x.old_asking_price; }).length;
+      var relisted = h.some(function (x) { return x.old_available === false && x.new_available === true; });
+      return {
+        address: r.address || null, label: r.label, postcode: r.postcode, uprn: r.uprn || null,
+        type: r.property_type, beds: r.bedrooms, asking: r.asking_price, tenure: r.tenure,
+        first_listed: first ? first.date_created : null, first_price: first ? first.new_asking_price : null,
+        price_cuts: cuts, relisted: relisted, agent: r.agent_name, url: r.url
+      };
+    });
+    var withAddr = rows.filter(function (r) { return r.address; }).length;
+    var withUprn = rows.filter(function (r) { return r.uprn; }).length;
+    var withFullPc = rows.filter(function (r) { return r.postcode && /\s\d[A-Z]{2}$/.test(r.postcode); }).length;
+    return {
+      sent: j.sent, total_results_count: d.total_results_count, pages: d.number_of_pages, on_this_page: rows.length,
+      with_full_address: withAddr, with_uprn: withUprn, with_full_postcode: withFullPc, homes: rows
+    };
+  }
+
+  function showSummary(sm) {
+    var box = $("summary");
+    if (!sm) { box.innerHTML = ""; lastSummary = ""; return; }
+    lastSummary = JSON.stringify(sm);
+    var html = "<div class='stats'>" +
+      "<div class='stat'><b>" + sm.total_results_count + "</b>homes found</div>" +
+      "<div class='stat'><b>" + sm.with_full_address + "</b>with full address</div>" +
+      "<div class='stat'><b>" + sm.with_uprn + "</b>with UPRN</div>" +
+      "<div class='stat'><b>" + sm.with_full_postcode + "</b>with full postcode</div></div>" +
+      "<div class='tw'><table><thead><tr><th>Address</th><th>Postcode</th><th>UPRN</th><th>Asking</th><th>First listed</th><th>Cuts</th><th>Relisted</th></tr></thead><tbody>";
+    sm.homes.forEach(function (r) {
+      html += "<tr><td" + (r.address ? "" : " class='miss'") + ">" + esc(r.address || r.label + " (no number)") + "</td><td>" + esc(r.postcode) + "</td><td" + (r.uprn ? "" : " class='miss'") + ">" + esc(r.uprn || "none") + "</td><td>" + money(r.asking) + "</td><td>" + esc(r.first_listed || "") + (r.first_price ? " at " + money(r.first_price) : "") + "</td><td>" + r.price_cuts + "</td><td>" + (r.relisted ? "Yes" : "") + "</td></tr>";
+    });
+    box.innerHTML = html + "</tbody></table></div>";
+  }
 
   Array.prototype.forEach.call(document.querySelectorAll("[data-preset]"), function (b) {
     b.addEventListener("click", function () {
@@ -113,18 +169,21 @@
         $("status").className = "status " + (ok ? "ok" : "err");
         $("status").textContent = j.error ? j.error : ("PaTMa replied with status " + j.status + (ok ? " (success)" : "") + ". Sign-in style used: " + j.authFormat + ".");
         lastText = JSON.stringify(j, null, 2);
+        showSummary(summarise(j));
         $("out").textContent = lastText.length > 60000 ? lastText.slice(0, 60000) + "\n… (cut short)" : lastText;
       })
       .catch(function (e) { $("status").className = "status err"; $("status").textContent = "Couldn't reach the test engine: " + e.message; })
       .then(function () { btn.disabled = false; });
   });
 
-  $("copy").addEventListener("click", function () {
-    var btn = this, txt = lastText.slice(0, 15000);
+  function copyText(btn, txt, label) {
     if (!txt) return;
     navigator.clipboard.writeText(txt).then(function () { btn.textContent = "Copied"; }, function () { btn.textContent = "Copy failed, select the text instead"; })
-      .then(function () { setTimeout(function () { btn.textContent = "Copy result for Claude"; }, 1800); });
-  });
+      .then(function () { setTimeout(function () { btn.textContent = label; }, 1800); });
+  }
+  // The summary is short enough to paste; if there's no listing summary, copy the full reply instead
+  $("copy").addEventListener("click", function () { copyText(this, lastSummary || lastText.slice(0, 15000), "Copy summary for Claude"); });
+  $("copyRaw").addEventListener("click", function () { copyText(this, lastText, "Copy full reply"); });
 })();
 </script>
 </body>
