@@ -35,6 +35,10 @@
   th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
   th { color:var(--muted); font-weight:600; }
   td.miss { color:var(--bad); }
+  .pill { display:inline-block; font-size:12px; font-weight:700; padding:2px 9px; border-radius:999px; }
+  .pill.hot { background:#fbe9e7; color:#b3261e; } .pill.warm { background:#fff1dc; color:#a35a00; } .pill.cold { background:#e6f2ea; color:#2e6b45; } .pill.none { background:#eceeea; color:#5b6670; }
+  td a { color:var(--accent); }
+  .stat.hot b { color:#b3261e; } .stat.warm b { color:#a35a00; } .stat.cold b { color:#2e6b45; }
 </style>
 </head>
 <body>
@@ -52,7 +56,27 @@
   </div>
 
   <div class="panel">
-    <h2>2. Pick a test</h2>
+    <h2>2. Find leads (live)</h2>
+    <p class="muted">Homes for sale from PaTMa (1 credit), price paid from Land Registry (free), then the Lead Checker maths on every home it can match.</p>
+    <div class="row" style="grid-template-columns: 1.2fr 1fr 1fr auto; align-items:end;">
+      <label>Postcode<input id="lpc" type="text" value="DN9 2AN"></label>
+      <label>Radius
+        <select id="lrad"><option value="0.5">½ mile</option><option value="1" selected>1 mile</option><option value="2">2 miles</option><option value="3">3 miles</option><option value="5">5 miles</option></select>
+      </label>
+      <label>Deposit assumed
+        <select id="ldep"><option value="5">5%</option><option value="10" selected>10%</option><option value="15">15%</option><option value="25">25%</option></select>
+      </label>
+      <button type="button" id="lgo">Find leads</button>
+    </div>
+    <p class="status" id="lstatus"></p>
+    <div id="lresults"></div>
+    <div class="btns"><button type="button" class="ghost" id="lcopy" hidden>Copy leads for Claude</button></div>
+  </div>
+
+  <details class="panel">
+  <summary style="cursor:pointer; font-weight:600;">Advanced: raw PaTMa tests</summary>
+  <div class="panel">
+    <h2>Pick a test</h2>
     <div class="btns">
       <button type="button" class="ghost" data-preset="listings">Homes for sale near a postcode</button>
       <button type="button" class="ghost" data-preset="byurl">One Rightmove listing by its link</button>
@@ -76,7 +100,7 @@
   </div>
 
   <div class="panel">
-    <h2>3. What PaTMa sent back</h2>
+    <h2>What PaTMa sent back</h2>
     <p class="status" id="status">Nothing sent yet.</p>
     <div id="summary"></div>
     <div class="btns">
@@ -87,6 +111,7 @@
       <pre id="out">-</pre>
     </details>
   </div>
+  </details>
 </div>
 
 <script>
@@ -100,7 +125,7 @@
   var $ = function (id) { return document.getElementById(id); };
   var lastText = "", lastSummary = "";
 
-  function money(n) { return n == null ? "" : "£" + Number(n).toLocaleString("en-GB"); }
+  function money(n) { if (n == null) return ""; n = Math.round(Number(n)); return (n < 0 ? "-£" : "£") + Math.abs(n).toLocaleString("en-GB"); }
   function esc(t) { return String(t == null ? "" : t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
 
   // Turn a listings reply into a short summary: one line per home, no photos or descriptions
@@ -184,6 +209,53 @@
   // The summary is short enough to paste; if there's no listing summary, copy the full reply instead
   $("copy").addEventListener("click", function () { copyText(this, lastSummary || lastText.slice(0, 15000), "Copy summary for Claude"); });
   $("copyRaw").addEventListener("click", function () { copyText(this, lastText, "Copy full reply"); });
+
+  // ---------- Live lead search ----------
+  var lastLeads = "";
+  var STATUS = { no_house_number: "No house number from PaTMa", no_sale_found: "No Land Registry sale found", land_registry_unavailable: "Land Registry didn't answer", no_asking_price: "No asking price" };
+  function monthYear(iso) { if (!iso) return ""; var d = new Date(iso); return d.toLocaleDateString("en-GB", { month: "short", year: "numeric" }); }
+  $("lgo").addEventListener("click", function () {
+    var btn = this; btn.disabled = true;
+    $("lstatus").className = "status"; $("lstatus").textContent = "Finding homes and checking Land Registry… (this can take up to 20 seconds)";
+    $("lresults").innerHTML = ""; $("lcopy").hidden = true;
+    fetch("/api/scout", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: $("pw").value, postcode: $("lpc").value, radius: $("lrad").value, deposit: $("ldep").value }) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.error) { $("lstatus").className = "status err"; $("lstatus").textContent = j.error; lastLeads = JSON.stringify(j); $("lcopy").hidden = false; return; }
+        var c = j.counts;
+        $("lstatus").className = "status ok";
+        $("lstatus").textContent = "Done. " + c.rated + " of " + c.returned + " homes matched to Land Registry and rated" + (j.land_registry_error ? ". Land Registry problem: " + j.land_registry_error : "") + (c.more_pages ? ". Only the first page of results is shown." : ".");
+        var html = "<div class='stats'>" +
+          "<div class='stat'><b>" + c.found + "</b>for sale</div>" +
+          "<div class='stat hot'><b>" + c.hot + "</b>hot</div>" +
+          "<div class='stat warm'><b>" + c.warm + "</b>warm</div>" +
+          "<div class='stat cold'><b>" + c.cold + "</b>cold</div>" +
+          "<div class='stat'><b>" + c.no_house_number + "</b>no house number</div>" +
+          "<div class='stat'><b>" + c.no_sale_found + "</b>no sale found</div></div>" +
+          "<div class='tw'><table><thead><tr><th>Rating</th><th>Address</th><th>Asking</th><th>Paid</th><th>Equity after selling</th><th>Payment jump</th><th>On market</th><th>Cuts</th></tr></thead><tbody>";
+        j.homes.forEach(function (h) {
+          var e = h.estimate;
+          var addr = "<a href='" + esc(h.url) + "' target='_blank' rel='noopener'>" + esc(h.address || (h.street_label + ", " + h.postcode)) + "</a>";
+          var paid = h.last_sale ? money(h.last_sale.price) + " <span class='muted'>" + monthYear(h.last_sale.date) + "</span>" : "<span class='muted'>" + esc(STATUS[h.status] || "") + "</span>";
+          var eq = e ? money(e.equity) + " <span class='muted'>(" + e.equity_pct + "%)</span>" : "";
+          var d = e && e.payment_next_fix ? e.payment_next_fix - e.payment_now : null;
+          var jump = d == null ? "" : (d >= 0 ? "+" : "") + money(d) + "/m";
+          var pill = e ? "<span class='pill " + e.rating + "'>" + e.rating.toUpperCase() + "</span>" : "<span class='pill none'>Not rated</span>";
+          html += "<tr><td>" + pill + "</td><td>" + addr + "</td><td>" + money(h.asking) + "</td><td>" + paid + "</td><td>" + eq + "</td><td>" + jump + "</td><td>" + (h.days_on_market != null ? h.days_on_market + " days" : "") + (h.relisted ? " <span class='muted'>(relisted)</span>" : "") + "</td><td>" + h.price_cuts + "</td></tr>";
+        });
+        $("lresults").innerHTML = html + "</tbody></table></div><p class='muted' style='margin-top:8px;'>Estimates only: " + j.search.deposit + "% deposit, 25-year repayment from the date bought, typical rate for that year, 2% selling costs. Land Registry takes a few months to record recent sales. General information, not financial advice.</p>";
+        // compact copy for Claude
+        lastLeads = JSON.stringify({ search: j.search, counts: j.counts, land_registry_error: j.land_registry_error, homes: j.homes.map(function (h) {
+          return { a: h.address || h.street_label + " " + h.postcode, ask: h.asking, st: h.status, by: h.matched_by, sale: h.last_sale ? [h.last_sale.price, h.last_sale.date, h.last_sale.estate, h.last_sale.category] : null, prev: h.earlier_sales.length, r: e2(h.estimate), dom: h.days_on_market, cuts: h.price_cuts, rel: h.relisted };
+        }) });
+        $("lcopy").hidden = false;
+      })
+      .catch(function (err) { $("lstatus").className = "status err"; $("lstatus").textContent = "Couldn't reach the engine: " + err.message; })
+      .then(function () { btn.disabled = false; });
+  });
+  function e2(e) { return e ? [e.rating, e.equity, e.equity_pct, e.rate_used] : null; }
+  $("lcopy").addEventListener("click", function () { copyText(this, lastLeads, "Copy leads for Claude"); });
 })();
 </script>
 </body>
