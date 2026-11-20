@@ -19,6 +19,19 @@ function norm(s) {
   return String(s || "").toUpperCase().replace(/&/g, " AND ").replace(/[^A-Z0-9]+/g, " ").trim()
     .split(" ").map((w) => ABBR[w] || w).join(" ");
 }
+function portalOf(url) {
+  const u = String(url || "").toLowerCase();
+  if (u.includes("rightmove")) return "Rightmove";
+  if (u.includes("zoopla")) return "Zoopla";
+  if (u.includes("onthemarket")) return "OnTheMarket";
+  return u ? "Other" : null;
+}
+// Same home = same UPRN, or same full address; homes with no number only match on postcode, street label, type and bedrooms together
+function homeKey(x) {
+  if (x.uprn) return "U:" + x.uprn;
+  if (x.address) return "A:" + norm(x.address.replace(x.postcode, "")) + "|" + x.postcode;
+  return "N:" + x.postcode + "|" + norm(String(x.street_label || "").replace(x.postcode, "")) + "|" + x.type + "|" + x.beds;
+}
 function monthsBetween(isoDate, now) {
   const d = new Date(isoDate);
   return (now.getFullYear() - d.getFullYear()) * 12 + (now.getMonth() - d.getMonth());
@@ -161,19 +174,55 @@ module.exports = async function handler(req, res) {
   let lr = {}, lrError = null;
   try { lr = await landRegistry(pcs); } catch (e) { lrError = e.message; }
 
-  // 3. Match and rate
-  const homes = listings.map((l) => {
+  // 3. Slim each listing down to what we use
+  const slim = listings.map((l) => {
     const h = (l.price_history || []).slice().sort((x, y) => (x.date_created < y.date_created ? -1 : 1));
     const first = h.find((x) => x.new_asking_price != null);
-    const cuts = h.filter((x) => x.old_asking_price != null && x.new_asking_price != null && x.new_asking_price < x.old_asking_price).length;
-    const relisted = h.some((x) => x.old_available === false && x.new_available === true);
-    const home = {
-      address: l.address || null, street_label: l.label, postcode: l.postcode, uprn: l.uprn || null, url: l.url,
-      type: l.property_type, beds: l.bedrooms, tenure: l.tenure, agent: l.agent_name, asking: l.asking_price,
+    return {
+      address: l.address || null, street_label: l.label, postcode: (l.postcode || "").toUpperCase(), uprn: l.uprn || null, url: l.url,
+      portal: portalOf(l.url), type: l.property_type, beds: l.bedrooms, tenure: l.tenure, agent: l.agent_name || null, asking: l.asking_price,
       first_listed: first ? first.date_created : null, first_price: first ? first.new_asking_price : null,
       days_on_market: first ? Math.round((now - new Date(first.date_created)) / 86400000) : null,
-      price_cuts: cuts, relisted, status: null, last_sale: null, earlier_sales: [], matched_by: null, estimate: null,
+      price_cuts: h.filter((x) => x.old_asking_price != null && x.new_asking_price != null && x.new_asking_price < x.old_asking_price).length,
+      relisted: h.some((x) => x.old_available === false && x.new_available === true),
+      raw: l,
     };
+  });
+
+  // 4. Group repeats of the same home (Barry's rule):
+  //    same agent = plain duplicate, show once; different agents = signal; different agents AND prices = stronger signal
+  const groups = new Map();
+  for (const x of slim) {
+    const k = homeKey(x);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(x);
+  }
+  let duplicatesRemoved = 0;
+  const merged = [...groups.values()].map((g) => {
+    const agents = new Set(g.map((x) => norm(x.agent || "UNKNOWN")));
+    const prices = new Set(g.map((x) => x.asking).filter((v) => v != null));
+    // Lead listing: lowest asking price, then longest on the market
+    const lead = g.slice().sort((a, b) => (a.asking || 9e9) - (b.asking || 9e9) || (b.days_on_market || 0) - (a.days_on_market || 0))[0];
+    let signal = null;
+    if (g.length > 1 && agents.size > 1) signal = prices.size > 1 ? "two_agents_two_prices" : "two_agents";
+    if (g.length > 1 && agents.size === 1) duplicatesRemoved += g.length - 1;
+    // Same agent repeats collapse to one entry; different agents are all kept in the list
+    const seen = new Set();
+    const listingsOut = g.filter((x) => { const a = norm(x.agent || "UNKNOWN") + "|" + x.asking; if (seen.has(a)) return false; seen.add(a); return true; })
+      .map((x) => ({ agent: x.agent, asking: x.asking, portal: x.portal, url: x.url, first_listed: x.first_listed, days_on_market: x.days_on_market }));
+    return Object.assign({}, lead, {
+      days_on_market: Math.max(...g.map((x) => x.days_on_market || 0)) || lead.days_on_market,
+      price_cuts: Math.max(...g.map((x) => x.price_cuts)),
+      relisted: g.some((x) => x.relisted),
+      signal, listings: listingsOut,
+    });
+  });
+
+  // 5. Match to Land Registry and rate
+  const homes = merged.map((mh) => {
+    const l = mh.raw;
+    const home = Object.assign({}, mh, { raw: undefined, status: null, last_sale: null, earlier_sales: [], matched_by: null, estimate: null });
+    delete home.raw;
     if (!l.address) { home.status = "no_house_number"; return home; }
     if (lrError) { home.status = "land_registry_unavailable"; return home; }
     const m = matchSales(l, lr[(l.postcode || "").toUpperCase()]);
@@ -201,10 +250,12 @@ module.exports = async function handler(req, res) {
       rated: count((h) => h.estimate), hot: count((h) => h.estimate && h.estimate.rating === "hot"),
       warm: count((h) => h.estimate && h.estimate.rating === "warm"), cold: count((h) => h.estimate && h.estimate.rating === "cold"),
       no_house_number: count((h) => h.status === "no_house_number"), no_sale_found: count((h) => h.status === "no_sale_found"),
+      homes: homes.length, duplicates_removed: duplicatesRemoved,
+      two_agents: count((h) => h.signal === "two_agents"), two_agents_two_prices: count((h) => h.signal === "two_agents_two_prices"),
     },
     land_registry_error: lrError,
     homes,
   });
 };
 
-module.exports._test = { norm, matchSales, equity, rating };
+module.exports._test = { norm, matchSales, equity, rating, homeKey, portalOf };
