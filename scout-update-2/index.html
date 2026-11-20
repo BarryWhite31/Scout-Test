@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scout data test</title>
+<style>
+  :root { --bg:#f3f4f1; --panel:#fff; --ink:#18222b; --muted:#5b6670; --line:#d9ddd6; --accent:#2b4c8c; --good:#2e6b45; --bad:#b3261e; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 -apple-system, "Segoe UI", Arial, sans-serif; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 24px 20px 60px; display:grid; gap:18px; }
+  h1 { margin:0; font-size:26px; }
+  p { margin:0; }
+  .muted { color:var(--muted); }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; display:grid; gap:12px; }
+  .panel h2 { margin:0; font-size:17px; }
+  label { font-weight:600; font-size:13px; display:grid; gap:4px; }
+  input, select, textarea { font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); width:100%; }
+  textarea { font-family: ui-monospace, Menlo, monospace; font-size:13px; min-height:110px; }
+  .row { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+  .row3 { display:grid; grid-template-columns: 110px 1fr; gap:12px; }
+  @media (max-width:700px){ .row, .row3 { grid-template-columns:1fr; } }
+  .btns { display:flex; flex-wrap:wrap; gap:8px; }
+  button { font:inherit; font-weight:600; padding:8px 14px; border-radius:6px; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--accent); }
+  button:disabled { opacity:.5; cursor:wait; }
+  pre { background:#0f1720; color:#e6edf3; padding:14px; border-radius:8px; overflow:auto; max-height:520px; font-size:12.5px; margin:0; white-space:pre-wrap; word-break:break-word; }
+  .status { font-weight:600; }
+  .status.ok { color:var(--good); } .status.err { color:var(--bad); }
+  .stats { display:flex; flex-wrap:wrap; gap:10px; }
+  .stat { border:1px solid var(--line); border-radius:8px; padding:8px 12px; background:var(--bg); }
+  .stat b { display:block; font-size:22px; }
+  .tw { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; }
+  td.miss { color:var(--bad); }
+  .pill { display:inline-block; font-size:12px; font-weight:700; padding:2px 9px; border-radius:999px; }
+  .pill.hot { background:#fbe9e7; color:#b3261e; } .pill.warm { background:#fff1dc; color:#a35a00; } .pill.cold { background:#e6f2ea; color:#2e6b45; } .pill.none { background:#eceeea; color:#5b6670; }
+  td a { color:var(--accent); }
+  .stat.hot b { color:#b3261e; } .stat.warm b { color:#a35a00; } .stat.cold b { color:#2e6b45; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>Scout data test</h1>
+    <p class="muted">A private page for checking what PaTMa sends back. Each request uses 1 PaTMa credit. Your API key stays on Vercel and is never shown here.</p>
+  </div>
+
+  <div class="panel">
+    <h2>1. Your test password</h2>
+    <label>The SCOUT_TEST_PASSWORD you set in Vercel
+      <input id="pw" type="password" autocomplete="current-password">
+    </label>
+  </div>
+
+  <div class="panel">
+    <h2>2. Find leads (live)</h2>
+    <p class="muted">Homes for sale from PaTMa (1 credit), price paid from Land Registry (free), then the Lead Checker maths on every home it can match.</p>
+    <div class="row" style="grid-template-columns: 1.2fr 1fr 1fr auto; align-items:end;">
+      <label>Postcode<input id="lpc" type="text" value="DN9 2AN"></label>
+      <label>Radius
+        <select id="lrad"><option value="0.5">½ mile</option><option value="1" selected>1 mile</option><option value="2">2 miles</option><option value="3">3 miles</option><option value="5">5 miles</option></select>
+      </label>
+      <label>Deposit assumed
+        <select id="ldep"><option value="5">5%</option><option value="10" selected>10%</option><option value="15">15%</option><option value="25">25%</option></select>
+      </label>
+      <button type="button" id="lgo">Find leads</button>
+    </div>
+    <p class="status" id="lstatus"></p>
+    <div id="lresults"></div>
+    <div class="btns"><button type="button" class="ghost" id="lcopy" hidden>Copy leads for Claude</button></div>
+  </div>
+
+  <details class="panel">
+  <summary style="cursor:pointer; font-weight:600;">Advanced: raw PaTMa tests</summary>
+  <div class="panel">
+    <h2>Pick a test</h2>
+    <div class="btns">
+      <button type="button" class="ghost" data-preset="listings">Homes for sale near a postcode</button>
+      <button type="button" class="ghost" data-preset="byurl">One Rightmove listing by its link</button>
+      <button type="button" class="ghost" data-preset="history">Price history of a listing</button>
+      <button type="button" class="ghost" data-preset="uprn">Listings for an address (UPRN)</button>
+    </div>
+    <div class="row3">
+      <label>Method
+        <select id="method"><option>GET</option><option>POST</option></select>
+      </label>
+      <label>PaTMa path
+        <input id="path" type="text" value="/api/prospector/v1/property-listing/">
+      </label>
+    </div>
+    <label>What to send (Claude may give you new text to paste in here)
+      <textarea id="params">{ "postcode": "DN9 2AN", "radius": 1, "include_auction": false, "include_retirement": false, "include_shared_ownership": false }</textarea>
+    </label>
+    <div class="btns">
+      <button type="button" id="send">Send to PaTMa</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>What PaTMa sent back</h2>
+    <p class="status" id="status">Nothing sent yet.</p>
+    <div id="summary"></div>
+    <div class="btns">
+      <button type="button" id="copy">Copy summary for Claude</button>
+      <button type="button" class="ghost" id="copyRaw">Copy full reply</button>
+    </div>
+    <details><summary class="muted" style="cursor:pointer;">Show PaTMa's full reply</summary>
+      <pre id="out">-</pre>
+    </details>
+  </div>
+  </details>
+</div>
+
+<script>
+(function () {
+  var presets = {
+    listings: { method: "GET", path: "/api/prospector/v1/property-listing/", params: { postcode: "DN9 2AN", radius: 1, include_auction: false, include_retirement: false, include_shared_ownership: false } },
+    byurl: { method: "GET", path: "/api/prospector/v1/property-listing-by-url/", params: { url: "paste a Rightmove listing link here" } },
+    history: { method: "GET", path: "/api/prospector/v1/listing-price-history/", params: { id: "listing id from the first test" } },
+    uprn: { method: "POST", path: "/api/prospector/v0/uprn-listings/", params: { uprns: ["UPRN from an earlier test"] } }
+  };
+  var $ = function (id) { return document.getElementById(id); };
+  var lastText = "", lastSummary = "";
+
+  function money(n) { if (n == null) return ""; n = Math.round(Number(n)); return (n < 0 ? "-£" : "£") + Math.abs(n).toLocaleString("en-GB"); }
+  function esc(t) { return String(t == null ? "" : t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+
+  // Turn a listings reply into a short summary: one line per home, no photos or descriptions
+  function summarise(j) {
+    var d = j && j.data && j.data.data;
+    if (!d || !Array.isArray(d.available_results)) return null;
+    var rows = d.available_results.map(function (r) {
+      var h = (r.price_history || []).slice().sort(function (a, b) { return a.date_created < b.date_created ? -1 : 1; });
+      var first = h.filter(function (x) { return x.new_asking_price != null; })[0];
+      var cuts = h.filter(function (x) { return x.old_asking_price != null && x.new_asking_price != null && x.new_asking_price < x.old_asking_price; }).length;
+      var relisted = h.some(function (x) { return x.old_available === false && x.new_available === true; });
+      return {
+        address: r.address || null, label: r.label, postcode: r.postcode, uprn: r.uprn || null,
+        type: r.property_type, beds: r.bedrooms, asking: r.asking_price, tenure: r.tenure,
+        first_listed: first ? first.date_created : null, first_price: first ? first.new_asking_price : null,
+        price_cuts: cuts, relisted: relisted, agent: r.agent_name, url: r.url
+      };
+    });
+    var withAddr = rows.filter(function (r) { return r.address; }).length;
+    var withUprn = rows.filter(function (r) { return r.uprn; }).length;
+    var withFullPc = rows.filter(function (r) { return r.postcode && /\s\d[A-Z]{2}$/.test(r.postcode); }).length;
+    return {
+      sent: j.sent, total_results_count: d.total_results_count, pages: d.number_of_pages, on_this_page: rows.length,
+      with_full_address: withAddr, with_uprn: withUprn, with_full_postcode: withFullPc, homes: rows
+    };
+  }
+
+  function showSummary(sm) {
+    var box = $("summary");
+    if (!sm) { box.innerHTML = ""; lastSummary = ""; return; }
+    lastSummary = JSON.stringify(sm);
+    var html = "<div class='stats'>" +
+      "<div class='stat'><b>" + sm.total_results_count + "</b>homes found</div>" +
+      "<div class='stat'><b>" + sm.with_full_address + "</b>with full address</div>" +
+      "<div class='stat'><b>" + sm.with_uprn + "</b>with UPRN</div>" +
+      "<div class='stat'><b>" + sm.with_full_postcode + "</b>with full postcode</div></div>" +
+      "<div class='tw'><table><thead><tr><th>Address</th><th>Postcode</th><th>UPRN</th><th>Asking</th><th>First listed</th><th>Cuts</th><th>Relisted</th></tr></thead><tbody>";
+    sm.homes.forEach(function (r) {
+      html += "<tr><td" + (r.address ? "" : " class='miss'") + ">" + esc(r.address || r.label + " (no number)") + "</td><td>" + esc(r.postcode) + "</td><td" + (r.uprn ? "" : " class='miss'") + ">" + esc(r.uprn || "none") + "</td><td>" + money(r.asking) + "</td><td>" + esc(r.first_listed || "") + (r.first_price ? " at " + money(r.first_price) : "") + "</td><td>" + r.price_cuts + "</td><td>" + (r.relisted ? "Yes" : "") + "</td></tr>";
+    });
+    box.innerHTML = html + "</tbody></table></div>";
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-preset]"), function (b) {
+    b.addEventListener("click", function () {
+      var p = presets[b.getAttribute("data-preset")];
+      $("method").value = p.method; $("path").value = p.path;
+      $("params").value = JSON.stringify(p.params, null, 2);
+    });
+  });
+
+  $("send").addEventListener("click", function () {
+    var params;
+    try { params = JSON.parse($("params").value || "{}"); }
+    catch (e) { $("status").className = "status err"; $("status").textContent = "The 'What to send' box isn't valid. Check the brackets and quote marks."; return; }
+    var btn = this; btn.disabled = true;
+    $("status").className = "status"; $("status").textContent = "Asking PaTMa…";
+    fetch("/api/patma", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: $("pw").value, method: $("method").value, path: $("path").value.trim(), params: params })
+    }).then(function (r) { return r.json().then(function (j) { return { http: r.status, j: j }; }); })
+      .then(function (x) {
+        var j = x.j;
+        var ok = j && j.status >= 200 && j.status < 300;
+        $("status").className = "status " + (ok ? "ok" : "err");
+        $("status").textContent = j.error ? j.error : ("PaTMa replied with status " + j.status + (ok ? " (success)" : "") + ". Sign-in style used: " + j.authFormat + ".");
+        lastText = JSON.stringify(j, null, 2);
+        showSummary(summarise(j));
+        $("out").textContent = lastText.length > 60000 ? lastText.slice(0, 60000) + "\n… (cut short)" : lastText;
+      })
+      .catch(function (e) { $("status").className = "status err"; $("status").textContent = "Couldn't reach the test engine: " + e.message; })
+      .then(function () { btn.disabled = false; });
+  });
+
+  function copyText(btn, txt, label) {
+    if (!txt) return;
+    navigator.clipboard.writeText(txt).then(function () { btn.textContent = "Copied"; }, function () { btn.textContent = "Copy failed, select the text instead"; })
+      .then(function () { setTimeout(function () { btn.textContent = label; }, 1800); });
+  }
+  // The summary is short enough to paste; if there's no listing summary, copy the full reply instead
+  $("copy").addEventListener("click", function () { copyText(this, lastSummary || lastText.slice(0, 15000), "Copy summary for Claude"); });
+  $("copyRaw").addEventListener("click", function () { copyText(this, lastText, "Copy full reply"); });
+
+  // ---------- Live lead search ----------
+  var lastLeads = "";
+  var STATUS = { no_house_number: "No house number from PaTMa", no_sale_found: "No sale since 1995: long-term owner, probably cold", land_registry_unavailable: "Land Registry didn't answer", no_asking_price: "No asking price" };
+  function monthYear(iso) { if (!iso) return ""; var d = new Date(iso); return d.toLocaleDateString("en-GB", { month: "short", year: "numeric" }); }
+  $("lgo").addEventListener("click", function () {
+    var btn = this; btn.disabled = true;
+    $("lstatus").className = "status"; $("lstatus").textContent = "Finding homes and checking Land Registry… (this can take up to 20 seconds)";
+    $("lresults").innerHTML = ""; $("lcopy").hidden = true;
+    fetch("/api/scout", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: $("pw").value, postcode: $("lpc").value, radius: $("lrad").value, deposit: $("ldep").value }) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.error) { $("lstatus").className = "status err"; $("lstatus").textContent = j.error; lastLeads = JSON.stringify(j); $("lcopy").hidden = false; return; }
+        var c = j.counts;
+        $("lstatus").className = "status ok";
+        $("lstatus").textContent = "Done. " + c.rated + " of " + c.returned + " homes matched to Land Registry and rated" + (j.land_registry_error ? ". Land Registry problem: " + j.land_registry_error : "") + (c.more_pages ? ". Only the first page of results is shown." : ".");
+        var html = "<div class='stats'>" +
+          "<div class='stat'><b>" + c.homes + "</b>homes for sale" + (c.found > c.homes ? " <span class='muted'>(" + c.found + " listings)</span>" : "") + "</div>" +
+          "<div class='stat hot'><b>" + c.hot + "</b>hot</div>" +
+          "<div class='stat warm'><b>" + c.warm + "</b>warm</div>" +
+          "<div class='stat cold'><b>" + c.cold + "</b>cold</div>" +
+          "<div class='stat'><b>" + c.no_house_number + "</b>no house number</div>" +
+          "<div class='stat'><b>" + c.no_sale_found + "</b>no sale since 1995</div>" +
+          "<div class='stat warm'><b>" + c.two_agents + "</b>with 2+ agents</div>" +
+          "<div class='stat hot'><b>" + c.two_agents_two_prices + "</b>2+ agents, different prices</div></div>" +
+          "<div class='tw'><table><thead><tr><th>Rating</th><th>Address</th><th>Asking</th><th>Paid</th><th>Equity after selling</th><th>Payment jump</th><th>On market</th><th>Cuts</th><th>Signals</th></tr></thead><tbody>";
+        j.homes.forEach(function (h) {
+          var e = h.estimate;
+          var addr = "<a href='" + esc(h.url) + "' target='_blank' rel='noopener'>" + esc(h.address || placeName(h)) + "</a>";
+          var paid = h.last_sale ? money(h.last_sale.price) + " <span class='muted'>" + monthYear(h.last_sale.date) + "</span>" : "<span class='muted'>" + esc(STATUS[h.status] || "") + "</span>";
+          var eq = e ? money(e.equity) + " <span class='muted'>(" + e.equity_pct + "%)</span>" : "";
+          var d = e && e.payment_next_fix ? e.payment_next_fix - e.payment_now : null;
+          var jump = d == null ? "" : (d >= 0 ? "+" : "") + money(d) + "/m";
+          var pill = e ? "<span class='pill " + e.rating + "'>" + e.rating.toUpperCase() + "</span>" : "<span class='pill none'>Not rated</span>";
+          html += "<tr><td>" + pill + "</td><td>" + addr + "</td><td>" + money(h.asking) + "</td><td>" + paid + "</td><td>" + eq + "</td><td>" + jump + "</td><td>" + (h.days_on_market != null ? h.days_on_market + " days" : "") + (h.relisted ? " <span class='muted'>(relisted)</span>" : "") + "</td><td>" + h.price_cuts + "</td><td>" + signalCell(h) + "</td></tr>";
+        });
+        $("lresults").innerHTML = html + "</tbody></table></div><p class='muted' style='margin-top:8px;'>Estimates only: " + j.search.deposit + "% deposit, 25-year repayment from the date bought, typical rate for that year, 2% selling costs. Land Registry takes a few months to record recent sales. General information, not financial advice.</p>";
+        // compact copy for Claude
+        lastLeads = JSON.stringify({ search: j.search, counts: j.counts, land_registry_error: j.land_registry_error, homes: j.homes.map(function (h) {
+          return { a: h.address || placeName(h), ask: h.asking, st: h.status, sig: h.signal, ls: (h.listings || []).map(function (x) { return [x.agent, x.asking, x.portal, x.days_on_market]; }), by: h.matched_by, sale: h.last_sale ? [h.last_sale.price, h.last_sale.date, h.last_sale.estate, h.last_sale.category] : null, prev: h.earlier_sales.length, r: e2(h.estimate), dom: h.days_on_market, cuts: h.price_cuts, rel: h.relisted };
+        }) });
+        $("lcopy").hidden = false;
+      })
+      .catch(function (err) { $("lstatus").className = "status err"; $("lstatus").textContent = "Couldn't reach the engine: " + err.message; })
+      .then(function () { btn.disabled = false; });
+  });
+  function placeName(h) { var l = String(h.street_label || ""); return l.indexOf(h.postcode) >= 0 ? l : l + ", " + h.postcode; }
+  function short(n) { return n >= 1000 ? "£" + Math.round(n / 1000) + "k" : money(n); }
+  function signalCell(h) {
+    if (!h.signal) return "";
+    var who = (h.listings || []).map(function (x) { return esc(x.agent || "Unknown agent") + " " + short(x.asking) + (x.portal ? " (" + x.portal + ")" : ""); }).join("<br>");
+    var pill = h.signal === "two_agents_two_prices" ? "<span class='pill hot'>2 agents, 2 prices</span>" : "<span class='pill warm'>2 agents</span>";
+    return pill + "<div class='muted' style='font-size:12px; margin-top:4px;'>" + who + "</div>";
+  }
+  function e2(e) { return e ? [e.rating, e.equity, e.equity_pct, e.rate_used] : null; }
+  $("lcopy").addEventListener("click", function () { copyText(this, lastLeads, "Copy leads for Claude"); });
+})();
+</script>
+</body>
+</html>
