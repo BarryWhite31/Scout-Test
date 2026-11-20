@@ -224,8 +224,8 @@
       .then(function (j) {
         if (j.error) { $("lstatus").className = "status err"; $("lstatus").textContent = j.error; lastLeads = JSON.stringify(j); $("lcopy").hidden = false; return; }
         var c = j.counts;
-        $("lstatus").className = "status ok";
-        $("lstatus").textContent = "Done. " + c.rated + " of " + c.returned + " homes matched to Land Registry and rated" + (j.land_registry_error ? ". Land Registry problem: " + j.land_registry_error : "") + (j.paging_note ? ". " + j.paging_note : ".") + (c.excluded_commercial_or_unpriced ? " " + c.excluded_commercial_or_unpriced + " commercial or unpriced listings left out." : "");
+        $("lstatus").className = j.land_registry_error ? "status err" : "status ok";
+        $("lstatus").textContent = "Done. " + c.rated + " of " + c.returned + " homes matched to Land Registry and rated" + (j.land_registry_error ? ". Land Registry problem: " + j.land_registry_error : "") + (j.paging_note ? ". " + j.paging_note : ".") + (c.excluded_commercial_or_unpriced ? " " + c.excluded_commercial_or_unpriced + " commercial or unpriced listings left out." : "") + (c.excluded_new_build_developer ? " " + c.excluded_new_build_developer + " new homes from housebuilders left out." : "");
         var html = "<div class='stats'>" +
           "<div class='stat'><b>" + c.homes + "</b>homes for sale" + (c.found > c.homes ? " <span class='muted'>(" + c.found + " listings)</span>" : "") + "</div>" +
           "<div class='stat hot'><b>" + c.hot + "</b>hot</div>" +
