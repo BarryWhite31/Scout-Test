@@ -26,6 +26,10 @@ function addressFromLabel(label) {
   const t = String(label || "").trim();
   return /^(flat|apartment)\s+\w+,?\s+\d+[a-z]?\s+\S|^\d+[a-z]?,?\s+[a-z]/i.test(t) ? t : null;
 }
+const DEVELOPER_RE = /\b(new homes|homes yorkshire|barratt|david wilson|persimmon|taylor wimpey|bellway|keepmoat|avant homes|harron homes|miller homes|redrow|bloor|strata|gleeson|lovell|countryside|vistry|linden homes|charles church|story homes|jones homes|ben bailey|kier living)\b/i;
+function isDeveloperNewHome(l) {
+  return l.new_home === true || DEVELOPER_RE.test(l.agent_name || "");
+}
 function portalOf(url) {
   const u = String(url || "").toLowerCase();
   if (u.includes("rightmove")) return "Rightmove";
@@ -79,10 +83,12 @@ function equity(asking, paid, saleDate, depositPct, now) {
 }
 
 // ---------- Land Registry ----------
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function landRegistry(postcodes) {
-  const out = {};
-  for (let i = 0; i < postcodes.length; i += 40) {
-    const chunk = postcodes.slice(i, i + 40);
+  const out = {}, failed = [];
+  for (let i = 0; i < postcodes.length; i += 25) {
+    if (i > 0) await sleep(700); // be polite: Land Registry limits how fast we can ask
+    const chunk = postcodes.slice(i, i + 25);
     const values = chunk.map((p) => '"' + p + '"^^xsd:string').join(" ");
     const q = `PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 PREFIX lrppi: <http://landregistry.data.gov.uk/def/ppi/>
@@ -103,13 +109,20 @@ WHERE {
   OPTIONAL { ?transx lrppi:newBuild ?newBuild }
   OPTIONAL { ?transx lrppi:transactionCategory/skos:prefLabel ?category }
 }`;
-    const r = await fetch(LR_SPARQL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/sparql-results+json" },
-      body: "query=" + encodeURIComponent(q),
-    });
-    if (!r.ok) throw new Error("Land Registry replied " + r.status);
-    const j = await r.json();
+    let j = null;
+    for (let attempt = 0; attempt < 4 && !j; attempt++) {
+      if (attempt > 0) await sleep(1500 * Math.pow(2, attempt - 1)); // 1.5s, 3s, 6s
+      try {
+        const r = await fetch(LR_SPARQL, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/sparql-results+json" },
+          body: "query=" + encodeURIComponent(q),
+        });
+        if (r.ok) j = await r.json();
+        else if (r.status !== 429 && r.status < 500) break;
+      } catch (e) { /* network hiccup: try again */ }
+    }
+    if (!j) { failed.push(...chunk); continue; }
     for (const b of j.results.bindings) {
       const v = (k) => (b[k] ? b[k].value : null);
       const pc = v("postcode");
@@ -119,7 +132,7 @@ WHERE {
       });
     }
   }
-  return out;
+  return { sales: out, failed };
 }
 
 // Find this listing's sales: exact address first, then same number in the same postcode if only one street matches
@@ -188,11 +201,19 @@ module.exports = async function handler(req, res) {
   const before = listings.length;
   listings = listings.filter((l) => !l.commercial && l.asking_price != null && l.asking_price >= MIN_PRICE);
   const excluded = before - listings.length;
+  // New homes sold by a housebuilder aren't owners in difficulty, and plots can share one address reference
+  const beforeNew = listings.length;
+  listings = listings.filter((l) => !isDeveloperNewHome(l));
+  const excludedNew = beforeNew - listings.length;
 
   // 2. Land Registry: every sale in every postcode we found (free)
   const pcs = [...new Set(listings.map((l) => (l.postcode || "").toUpperCase()).filter((p) => PC_RE.test(p) && p.includes(" ")))];
-  let lr = {}, lrError = null;
-  try { lr = await landRegistry(pcs); } catch (e) { lrError = e.message; }
+  let lr = {}, lrError = null, lrFailed = new Set();
+  try {
+    const got = await landRegistry(pcs);
+    lr = got.sales; lrFailed = new Set(got.failed);
+    if (got.failed.length) lrError = "Land Registry was busy and didn't answer for " + got.failed.length + " of " + pcs.length + " postcodes. Try again in a minute.";
+  } catch (e) { lrError = e.message; lrFailed = new Set(pcs); }
 
   // 3. Slim each listing down to what we use
   const slim = listings.map((l) => {
@@ -245,7 +266,7 @@ module.exports = async function handler(req, res) {
     const home = Object.assign({}, mh, { raw: undefined, status: null, last_sale: null, earlier_sales: [], matched_by: null, estimate: null });
     delete home.raw;
     if (!home.address) { home.status = "no_house_number"; return home; }
-    if (lrError) { home.status = "land_registry_unavailable"; return home; }
+    if (lrFailed.has(home.postcode)) { home.status = "land_registry_unavailable"; return home; }
     const m = matchSales({ address: home.address, postcode: home.postcode }, lr[home.postcode]);
     if (!m.sales.length) { home.status = "no_sale_found"; return home; }
     const sorted = m.sales.sort((x, y) => (x.date < y.date ? 1 : -1));
@@ -273,7 +294,7 @@ module.exports = async function handler(req, res) {
       rated: count((h) => h.estimate), hot: count((h) => h.estimate && h.estimate.rating === "hot"),
       warm: count((h) => h.estimate && h.estimate.rating === "warm"), cold: count((h) => h.estimate && h.estimate.rating === "cold"),
       no_house_number: count((h) => h.status === "no_house_number"), no_sale_found: count((h) => h.status === "no_sale_found"),
-      homes: homes.length, duplicates_removed: duplicatesRemoved, excluded_commercial_or_unpriced: excluded,
+      homes: homes.length, duplicates_removed: duplicatesRemoved, excluded_commercial_or_unpriced: excluded, excluded_new_build_developer: excludedNew,
       pages_fetched: pagesFetched, numbers_from_title: count((h) => h.address_from_title),
       non_standard_sale: count((h) => h.non_standard_sale),
       two_agents: count((h) => h.signal === "two_agents"), two_agents_two_prices: count((h) => h.signal === "two_agents_two_prices"),
@@ -283,4 +304,4 @@ module.exports = async function handler(req, res) {
   });
 };
 
-module.exports._test = { norm, matchSales, equity, rating, homeKey, portalOf, addressFromLabel };
+module.exports._test = { norm, matchSales, equity, rating, homeKey, portalOf, addressFromLabel, isDeveloperNewHome };
