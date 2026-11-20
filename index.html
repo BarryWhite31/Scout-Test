@@ -74,6 +74,23 @@
   </div>
 
   <details class="panel">
+  <summary style="cursor:pointer; font-weight:600;">Advanced: EPC register test</summary>
+  <div class="panel">
+    <p class="muted">Asks the government EPC register directly. Free, no credits used.</p>
+    <div class="btns">
+      <button type="button" class="ghost" id="epcSearch">Homes with an EPC in a postcode</button>
+      <button type="button" class="ghost" id="epcCert">One certificate in full</button>
+    </div>
+    <label>EPC path<input id="epath" type="text" value="/api/domestic/search"></label>
+    <label>What to send<textarea id="eparams">{ "postcode": "S60 8AT" }</textarea></label>
+    <div class="btns"><button type="button" id="esend">Ask the EPC register</button></div>
+    <p class="status" id="estatus"></p>
+    <pre id="eout" style="max-height:360px;">-</pre>
+    <div class="btns"><button type="button" class="ghost" id="ecopy">Copy EPC reply for Claude</button></div>
+  </div>
+  </details>
+
+  <details class="panel">
   <summary style="cursor:pointer; font-weight:600;">Advanced: raw PaTMa tests</summary>
   <div class="panel">
     <h2>Pick a test</h2>
@@ -266,6 +283,29 @@
     var pill = h.signal === "two_agents_two_prices" ? "<span class='pill hot'>2 agents, 2 prices</span>" : "<span class='pill warm'>2 agents</span>";
     return extra + pill + "<div class='muted' style='font-size:12px; margin-top:4px;'>" + who + "</div>";
   }
+  // ---------- EPC register tester ----------
+  var lastEpc = "";
+  $("epcSearch").addEventListener("click", function () { $("epath").value = "/api/domestic/search"; $("eparams").value = '{ "postcode": "S60 8AT" }'; });
+  $("epcCert").addEventListener("click", function () { $("epath").value = "/api/certificate"; $("eparams").value = '{ "certificate_number": "paste a certificateNumber from the first test" }'; });
+  $("esend").addEventListener("click", function () {
+    var params;
+    try { params = JSON.parse($("eparams").value || "{}"); }
+    catch (e) { $("estatus").className = "status err"; $("estatus").textContent = "The 'What to send' box isn't valid. Check the brackets and quote marks."; return; }
+    var btn = this; btn.disabled = true; $("estatus").className = "status"; $("estatus").textContent = "Asking the EPC register…";
+    fetch("/api/epc", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: $("pw").value, path: $("epath").value.trim(), params: params }) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var ok = j.status >= 200 && j.status < 300;
+        $("estatus").className = "status " + (ok ? "ok" : "err");
+        $("estatus").textContent = j.error ? j.error : "EPC register replied with status " + j.status + (ok ? " (success)" : "");
+        lastEpc = JSON.stringify(j, null, 2);
+        $("eout").textContent = lastEpc.length > 40000 ? lastEpc.slice(0, 40000) + "\n… (cut short)" : lastEpc;
+      })
+      .catch(function (err) { $("estatus").className = "status err"; $("estatus").textContent = "Couldn't reach the engine: " + err.message; })
+      .then(function () { btn.disabled = false; });
+  });
+  $("ecopy").addEventListener("click", function () { copyText(this, lastEpc.slice(0, 30000), "Copy EPC reply for Claude"); });
+
   function e2(e) { return e ? [e.rating, e.equity, e.equity_pct, e.rate_used] : null; }
   $("lcopy").addEventListener("click", function () { copyText(this, lastLeads, "Copy leads for Claude"); });
 })();
