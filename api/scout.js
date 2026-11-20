@@ -10,6 +10,8 @@ const RATE_DEFAULT = 5.0; // used for years not in the table
 const RATE_NOW = 5.9;     // Moneyfacts average new mortgage rate, Nov 2026
 const TERM_YEARS = 25;
 const SELL_COSTS = 2;     // % of sale price
+const MAX_PAGES = 5;      // PaTMa pages per search (100 listings and 1 credit each)
+const MIN_PRICE = 20000;  // ignore listings priced below this (land, garages, £1 placeholders)
 
 const PC_RE = /^[A-Z]{1,2}[0-9][A-Z0-9]? ?[0-9][A-Z]{2}$/;
 
@@ -18,6 +20,11 @@ const ABBR = { RD: "ROAD", AVE: "AVENUE", AV: "AVENUE", CL: "CLOSE", DR: "DRIVE"
 function norm(s) {
   return String(s || "").toUpperCase().replace(/&/g, " AND ").replace(/[^A-Z0-9]+/g, " ").trim()
     .split(" ").map((w) => ABBR[w] || w).join(" ");
+}
+// "5 Ashbourne Way, Waverley" or "Flat 2, 10 High Street" -> usable address; "Plot 10 ..." or "Hawes Way, Waverley" -> null
+function addressFromLabel(label) {
+  const t = String(label || "").trim();
+  return /^(flat|apartment)\s+\w+,?\s+\d+[a-z]?\s+\S|^\d+[a-z]?,?\s+[a-z]/i.test(t) ? t : null;
 }
 function portalOf(url) {
   const u = String(url || "").toLowerCase();
@@ -154,20 +161,33 @@ module.exports = async function handler(req, res) {
   const deposit = [5, 10, 15, 25].includes(+b.deposit) ? +b.deposit : 10;
   const now = new Date();
 
-  // 1. PaTMa: homes for sale (1 credit)
-  const url = new URL(PATMA);
-  Object.entries({ postcode, radius, include_auction: false, include_retirement: false, include_shared_ownership: false })
-    .forEach(([k, v]) => url.searchParams.set(k, String(v)));
-  let listings, pages, total;
-  try {
+  // 1. PaTMa: homes for sale (1 credit per page of 100, up to MAX_PAGES)
+  const fetchPage = async (page) => {
+    const url = new URL(PATMA);
+    Object.entries({ postcode, radius, include_auction: false, include_retirement: false, include_shared_ownership: false, page })
+      .forEach(([k, v]) => url.searchParams.set(k, String(v)));
     const r = await fetch(url, { headers: { Authorization: "Token " + key, Accept: "application/json" } });
-    const j = await r.json();
+    return r.json();
+  };
+  let listings, pages, total, pagesFetched = 1, pagingNote = null;
+  try {
+    const j = await fetchPage(1);
     if (j.status !== "success") return res.status(200).json({ error: "PaTMa didn't return listings.", patma: j });
     listings = j.data.available_results || [];
     pages = j.data.number_of_pages; total = j.data.total_results_count;
+    for (let p = 2; p <= Math.min(pages || 1, MAX_PAGES); p++) {
+      const jp = await fetchPage(p);
+      if (jp.status !== "success" || !jp.data || jp.data.current_page !== p) { pagingNote = "PaTMa didn't return page " + p + "."; break; }
+      listings = listings.concat(jp.data.available_results || []);
+      pagesFetched = p;
+    }
+    if (pages > MAX_PAGES) pagingNote = "Showing the first " + MAX_PAGES * 100 + " listings. Try a smaller radius.";
   } catch (e) {
     return res.status(200).json({ error: "Couldn't reach PaTMa: " + e.message });
   }
+  const before = listings.length;
+  listings = listings.filter((l) => !l.commercial && l.asking_price != null && l.asking_price >= MIN_PRICE);
+  const excluded = before - listings.length;
 
   // 2. Land Registry: every sale in every postcode we found (free)
   const pcs = [...new Set(listings.map((l) => (l.postcode || "").toUpperCase()).filter((p) => PC_RE.test(p) && p.includes(" ")))];
@@ -179,7 +199,8 @@ module.exports = async function handler(req, res) {
     const h = (l.price_history || []).slice().sort((x, y) => (x.date_created < y.date_created ? -1 : 1));
     const first = h.find((x) => x.new_asking_price != null);
     return {
-      address: l.address || null, street_label: l.label, postcode: (l.postcode || "").toUpperCase(), uprn: l.uprn || null, url: l.url,
+      address: l.address || addressFromLabel(l.label), address_from_title: !l.address && !!addressFromLabel(l.label),
+      street_label: l.label, postcode: (l.postcode || "").toUpperCase(), uprn: l.uprn || null, url: l.url,
       portal: portalOf(l.url), type: l.property_type, beds: l.bedrooms, tenure: l.tenure, agent: l.agent_name || null, asking: l.asking_price,
       first_listed: first ? first.date_created : null, first_price: first ? first.new_asking_price : null,
       days_on_market: first ? Math.round((now - new Date(first.date_created)) / 86400000) : null,
@@ -223,14 +244,16 @@ module.exports = async function handler(req, res) {
     const l = mh.raw;
     const home = Object.assign({}, mh, { raw: undefined, status: null, last_sale: null, earlier_sales: [], matched_by: null, estimate: null });
     delete home.raw;
-    if (!l.address) { home.status = "no_house_number"; return home; }
+    if (!home.address) { home.status = "no_house_number"; return home; }
     if (lrError) { home.status = "land_registry_unavailable"; return home; }
-    const m = matchSales(l, lr[(l.postcode || "").toUpperCase()]);
+    const m = matchSales({ address: home.address, postcode: home.postcode }, lr[home.postcode]);
     if (!m.sales.length) { home.status = "no_sale_found"; return home; }
     const sorted = m.sales.sort((x, y) => (x.date < y.date ? 1 : -1));
     home.last_sale = sorted[0];
     home.earlier_sales = sorted.slice(1).map((s) => ({ price: s.price, date: s.date }));
-    home.matched_by = m.how;
+    home.matched_by = m.how + (home.address_from_title ? " (number from listing title)" : "");
+    // Land Registry category B: repossession, buy-to-let with a mortgage, company or other non-private buyer
+    home.non_standard_sale = /additional/i.test(sorted[0].category || "");
     if (!l.asking_price) { home.status = "no_asking_price"; return home; }
     home.estimate = equity(l.asking_price, sorted[0].price, sorted[0].date, deposit, now);
     home.status = "rated";
@@ -246,16 +269,18 @@ module.exports = async function handler(req, res) {
   return res.status(200).json({
     search: { postcode, radius, deposit, run_at: now.toISOString() },
     counts: {
-      found: total, returned: homes.length, more_pages: pages > 1,
+      found: total, returned: homes.length, more_pages: pages > pagesFetched,
       rated: count((h) => h.estimate), hot: count((h) => h.estimate && h.estimate.rating === "hot"),
       warm: count((h) => h.estimate && h.estimate.rating === "warm"), cold: count((h) => h.estimate && h.estimate.rating === "cold"),
       no_house_number: count((h) => h.status === "no_house_number"), no_sale_found: count((h) => h.status === "no_sale_found"),
-      homes: homes.length, duplicates_removed: duplicatesRemoved,
+      homes: homes.length, duplicates_removed: duplicatesRemoved, excluded_commercial_or_unpriced: excluded,
+      pages_fetched: pagesFetched, numbers_from_title: count((h) => h.address_from_title),
+      non_standard_sale: count((h) => h.non_standard_sale),
       two_agents: count((h) => h.signal === "two_agents"), two_agents_two_prices: count((h) => h.signal === "two_agents_two_prices"),
     },
-    land_registry_error: lrError,
+    land_registry_error: lrError, paging_note: pagingNote,
     homes,
   });
 };
 
-module.exports._test = { norm, matchSales, equity, rating, homeKey, portalOf };
+module.exports._test = { norm, matchSales, equity, rating, homeKey, portalOf, addressFromLabel };

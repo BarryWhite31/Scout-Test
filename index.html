@@ -57,7 +57,7 @@
 
   <div class="panel">
     <h2>2. Find leads (live)</h2>
-    <p class="muted">Homes for sale from PaTMa (1 credit), price paid from Land Registry (free), then the Lead Checker maths on every home it can match.</p>
+    <p class="muted">Homes for sale from PaTMa (1 credit per 100 listings), price paid from Land Registry (free), then the Lead Checker maths on every home it can match.</p>
     <div class="row" style="grid-template-columns: 1.2fr 1fr 1fr auto; align-items:end;">
       <label>Postcode<input id="lpc" type="text" value="DN9 2AN"></label>
       <label>Radius
@@ -225,7 +225,7 @@
         if (j.error) { $("lstatus").className = "status err"; $("lstatus").textContent = j.error; lastLeads = JSON.stringify(j); $("lcopy").hidden = false; return; }
         var c = j.counts;
         $("lstatus").className = "status ok";
-        $("lstatus").textContent = "Done. " + c.rated + " of " + c.returned + " homes matched to Land Registry and rated" + (j.land_registry_error ? ". Land Registry problem: " + j.land_registry_error : "") + (c.more_pages ? ". Only the first page of results is shown." : ".");
+        $("lstatus").textContent = "Done. " + c.rated + " of " + c.returned + " homes matched to Land Registry and rated" + (j.land_registry_error ? ". Land Registry problem: " + j.land_registry_error : "") + (j.paging_note ? ". " + j.paging_note : ".") + (c.excluded_commercial_or_unpriced ? " " + c.excluded_commercial_or_unpriced + " commercial or unpriced listings left out." : "");
         var html = "<div class='stats'>" +
           "<div class='stat'><b>" + c.homes + "</b>homes for sale" + (c.found > c.homes ? " <span class='muted'>(" + c.found + " listings)</span>" : "") + "</div>" +
           "<div class='stat hot'><b>" + c.hot + "</b>hot</div>" +
@@ -234,11 +234,12 @@
           "<div class='stat'><b>" + c.no_house_number + "</b>no house number</div>" +
           "<div class='stat'><b>" + c.no_sale_found + "</b>no sale since 1995</div>" +
           "<div class='stat warm'><b>" + c.two_agents + "</b>with 2+ agents</div>" +
-          "<div class='stat hot'><b>" + c.two_agents_two_prices + "</b>2+ agents, different prices</div></div>" +
+          "<div class='stat hot'><b>" + c.two_agents_two_prices + "</b>2+ agents, different prices</div>" +
+          "<div class='stat'><b>" + c.non_standard_sale + "</b>non-standard purchase</div></div>" +
           "<div class='tw'><table><thead><tr><th>Rating</th><th>Address</th><th>Asking</th><th>Paid</th><th>Equity after selling</th><th>Payment jump</th><th>On market</th><th>Cuts</th><th>Signals</th></tr></thead><tbody>";
         j.homes.forEach(function (h) {
           var e = h.estimate;
-          var addr = "<a href='" + esc(h.url) + "' target='_blank' rel='noopener'>" + esc(h.address || placeName(h)) + "</a>";
+          var addr = "<a href='" + esc(h.url) + "' target='_blank' rel='noopener'>" + esc(h.address || placeName(h)) + "</a>" + (h.address_from_title ? " <span class='muted' style='font-size:12px;'>(number from listing title)</span>" : "");
           var paid = h.last_sale ? money(h.last_sale.price) + " <span class='muted'>" + monthYear(h.last_sale.date) + "</span>" : "<span class='muted'>" + esc(STATUS[h.status] || "") + "</span>";
           var eq = e ? money(e.equity) + " <span class='muted'>(" + e.equity_pct + "%)</span>" : "";
           var d = e && e.payment_next_fix ? e.payment_next_fix - e.payment_now : null;
@@ -249,7 +250,7 @@
         $("lresults").innerHTML = html + "</tbody></table></div><p class='muted' style='margin-top:8px;'>Estimates only: " + j.search.deposit + "% deposit, 25-year repayment from the date bought, typical rate for that year, 2% selling costs. Land Registry takes a few months to record recent sales. General information, not financial advice.</p>";
         // compact copy for Claude
         lastLeads = JSON.stringify({ search: j.search, counts: j.counts, land_registry_error: j.land_registry_error, homes: j.homes.map(function (h) {
-          return { a: h.address || placeName(h), ask: h.asking, st: h.status, sig: h.signal, ls: (h.listings || []).map(function (x) { return [x.agent, x.asking, x.portal, x.days_on_market]; }), by: h.matched_by, sale: h.last_sale ? [h.last_sale.price, h.last_sale.date, h.last_sale.estate, h.last_sale.category] : null, prev: h.earlier_sales.length, r: e2(h.estimate), dom: h.days_on_market, cuts: h.price_cuts, rel: h.relisted };
+          return { a: h.address || placeName(h), ask: h.asking, st: h.status, sig: h.signal, nss: h.non_standard_sale || false, ttl: h.address_from_title || false, ls: (h.listings || []).map(function (x) { return [x.agent, x.asking, x.portal, x.days_on_market]; }), by: h.matched_by, sale: h.last_sale ? [h.last_sale.price, h.last_sale.date, h.last_sale.estate, h.last_sale.category] : null, prev: h.earlier_sales.length, r: e2(h.estimate), dom: h.days_on_market, cuts: h.price_cuts, rel: h.relisted };
         }) });
         $("lcopy").hidden = false;
       })
@@ -259,10 +260,11 @@
   function placeName(h) { var l = String(h.street_label || ""); return l.indexOf(h.postcode) >= 0 ? l : l + ", " + h.postcode; }
   function short(n) { return n >= 1000 ? "£" + Math.round(n / 1000) + "k" : money(n); }
   function signalCell(h) {
-    if (!h.signal) return "";
+    var extra = h.non_standard_sale ? "<span class='pill none' title='Land Registry category B: repossession, buy-to-let with a mortgage, company or other non-private buyer'>Non-standard purchase</span> " : "";
+    if (!h.signal) return extra;
     var who = (h.listings || []).map(function (x) { return esc(x.agent || "Unknown agent") + " " + short(x.asking) + (x.portal ? " (" + x.portal + ")" : ""); }).join("<br>");
     var pill = h.signal === "two_agents_two_prices" ? "<span class='pill hot'>2 agents, 2 prices</span>" : "<span class='pill warm'>2 agents</span>";
-    return pill + "<div class='muted' style='font-size:12px; margin-top:4px;'>" + who + "</div>";
+    return extra + pill + "<div class='muted' style='font-size:12px; margin-top:4px;'>" + who + "</div>";
   }
   function e2(e) { return e ? [e.rating, e.equity, e.equity_pct, e.rate_used] : null; }
   $("lcopy").addEventListener("click", function () { copyText(this, lastLeads, "Copy leads for Claude"); });
