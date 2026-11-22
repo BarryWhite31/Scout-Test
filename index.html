@@ -248,7 +248,8 @@
           "<div class='stat hot'><b>" + c.hot + "</b>hot</div>" +
           "<div class='stat warm'><b>" + c.warm + "</b>warm</div>" +
           "<div class='stat cold'><b>" + c.cold + "</b>cold</div>" +
-          "<div class='stat'><b>" + c.no_house_number + "</b>no house number</div>" +
+          "<div class='stat'><b>" + (c.epc_matched || 0) + "</b>house numbers found via EPC</div>" +
+          "<div class='stat'><b>" + c.no_house_number + "</b>still no house number" + (c.epc_possible ? " <span class='muted'>(" + c.epc_possible + " with possible addresses)</span>" : "") + "</div>" +
           "<div class='stat'><b>" + c.no_sale_found + "</b>no sale since 1995</div>" +
           "<div class='stat warm'><b>" + c.two_agents + "</b>with 2+ agents</div>" +
           "<div class='stat hot'><b>" + c.two_agents_two_prices + "</b>2+ agents, different prices</div>" +
@@ -256,8 +257,11 @@
           "<div class='tw'><table><thead><tr><th>Rating</th><th>Address</th><th>Asking</th><th>Paid</th><th>Equity after selling</th><th>Payment jump</th><th>On market</th><th>Cuts</th><th>Signals</th></tr></thead><tbody>";
         j.homes.forEach(function (h) {
           var e = h.estimate;
-          var addr = "<a href='" + esc(h.url) + "' target='_blank' rel='noopener'>" + esc(h.address || placeName(h)) + "</a>" + (h.address_from_title ? " <span class='muted' style='font-size:12px;'>(number from listing title)</span>" : "");
-          var paid = h.last_sale ? money(h.last_sale.price) + " <span class='muted'>" + monthYear(h.last_sale.date) + "</span>" : "<span class='muted'>" + esc(STATUS[h.status] || "") + "</span>";
+          var addr = "<a href='" + esc(h.url) + "' target='_blank' rel='noopener'>" + esc(h.address || placeName(h)) + "</a>" + (h.address_from_title ? " <span class='muted' style='font-size:12px;'>(number from listing title)</span>" : "") +
+            (h.address_from_epc ? " <span class='pill info' title='" + esc((h.epc_match.reasons || []).join("; ")) + "'>Matched via EPC</span>" : "");
+          var paid = h.last_sale ? money(h.last_sale.price) + " <span class='muted'>" + monthYear(h.last_sale.date) + "</span>"
+            : (h.possible_addresses && h.possible_addresses.length ? "<span class='muted' style='font-size:12px;'>Possibly " + h.possible_addresses.map(function (p) { return "<span title='" + esc(p.reasons.join("; ")) + "'>" + esc(p.address) + "</span>"; }).join(" or ") + "</span>"
+            : "<span class='muted'>" + esc(STATUS[h.status] || "") + "</span>");
           var eq = e ? money(e.equity) + " <span class='muted'>(" + e.equity_pct + "%)</span>" : "";
           var d = e && e.payment_next_fix ? e.payment_next_fix - e.payment_now : null;
           var jump = d == null ? "" : (d >= 0 ? "+" : "") + money(d) + "/m";
@@ -266,8 +270,8 @@
         });
         $("lresults").innerHTML = html + "</tbody></table></div><p class='muted' style='margin-top:8px;'>Estimates only: " + j.search.deposit + "% deposit, 25-year repayment from the date bought, typical rate for that year, 2% selling costs. Land Registry takes a few months to record recent sales. General information, not financial advice.</p>";
         // compact copy for Claude
-        lastLeads = JSON.stringify({ search: j.search, counts: j.counts, land_registry_error: j.land_registry_error, homes: j.homes.map(function (h) {
-          return { a: h.address || placeName(h), ask: h.asking, st: h.status, sig: h.signal, nss: h.non_standard_sale || false, ttl: h.address_from_title || false, ls: (h.listings || []).map(function (x) { return [x.agent, x.asking, x.portal, x.days_on_market]; }), by: h.matched_by, sale: h.last_sale ? [h.last_sale.price, h.last_sale.date, h.last_sale.estate, h.last_sale.category] : null, prev: h.earlier_sales.length, r: e2(h.estimate), dom: h.days_on_market, cuts: h.price_cuts, rel: h.relisted };
+        lastLeads = JSON.stringify({ search: j.search, counts: j.counts, land_registry_error: j.land_registry_error, epc: j.epc, homes: j.homes.map(function (h) {
+          return { a: h.address || placeName(h), ask: h.asking, st: h.status, sig: h.signal, nss: h.non_standard_sale || false, ttl: h.address_from_title || false, epc: h.epc_match ? [h.epc_match.address, h.epc_match.score, h.epc_match.reasons] : null, poss: h.possible_addresses ? h.possible_addresses.map(function (p) { return [p.address, p.score, p.reasons]; }) : null, ls: (h.listings || []).map(function (x) { return [x.agent, x.asking, x.portal, x.days_on_market]; }), by: h.matched_by, sale: h.last_sale ? [h.last_sale.price, h.last_sale.date, h.last_sale.estate, h.last_sale.category] : null, prev: h.earlier_sales.length, r: e2(h.estimate), dom: h.days_on_market, cuts: h.price_cuts, rel: h.relisted };
         }) });
         $("lcopy").hidden = false;
       })
