@@ -1,6 +1,7 @@
 // Lease Option Scout: live search (PaTMa listings + Land Registry price paid + equity rating)
 // Settings needed in Vercel: PATMA_API_KEY and SCOUT_TEST_PASSWORD
 
+const { matchByEpc } = require("./_epcmatch.js");
 const PATMA = "https://app.patma.co.uk/api/prospector/v1/property-listing/";
 const LR_SPARQL = "https://landregistry.data.gov.uk/landregistry/query";
 
@@ -260,6 +261,31 @@ module.exports = async function handler(req, res) {
     });
   });
 
+  // 4b. Homes with no house number: try the EPC register (free)
+  let epcStats = null;
+  if (process.env.EPC_API_TOKEN) {
+    try { epcStats = await matchByEpc(merged, process.env.EPC_API_TOKEN, now); }
+    catch (e) { epcStats = { error: e.message }; }
+    // Two listings the EPC step placed at the same address are the same home: apply Barry's agent rule again
+    const byUprn = new Map(), keep = [];
+    for (const h of merged) {
+      if (!h.address_from_epc || !h.uprn) { keep.push(h); continue; }
+      const other = byUprn.get(h.uprn);
+      if (!other) { byUprn.set(h.uprn, h); keep.push(h); continue; }
+      const all = other.listings.concat(h.listings);
+      const agents = new Set(all.map((x) => norm(x.agent || "UNKNOWN")));
+      const prices = new Set(all.map((x) => x.asking).filter((v) => v != null));
+      other.listings = all;
+      other.signal = agents.size > 1 ? (prices.size > 1 ? "two_agents_two_prices" : "two_agents") : other.signal;
+      if (agents.size === 1) duplicatesRemoved++;
+      if (h.asking != null && (other.asking == null || h.asking < other.asking)) { other.asking = h.asking; other.raw = h.raw; other.url = h.url; }
+      other.days_on_market = Math.max(other.days_on_market || 0, h.days_on_market || 0);
+      other.price_cuts = Math.max(other.price_cuts, h.price_cuts);
+      other.relisted = other.relisted || h.relisted;
+    }
+    merged.length = 0; keep.forEach((h) => merged.push(h));
+  }
+
   // 5. Match to Land Registry and rate
   const homes = merged.map((mh) => {
     const l = mh.raw;
@@ -272,11 +298,11 @@ module.exports = async function handler(req, res) {
     const sorted = m.sales.sort((x, y) => (x.date < y.date ? 1 : -1));
     home.last_sale = sorted[0];
     home.earlier_sales = sorted.slice(1).map((s) => ({ price: s.price, date: s.date }));
-    home.matched_by = m.how + (home.address_from_title ? " (number from listing title)" : "");
+    home.matched_by = m.how + (home.address_from_title ? " (number from listing title)" : "") + (home.address_from_epc ? " (number from EPC match)" : "");
     // Land Registry category B: repossession, buy-to-let with a mortgage, company or other non-private buyer
     home.non_standard_sale = /additional/i.test(sorted[0].category || "");
-    if (!l.asking_price) { home.status = "no_asking_price"; return home; }
-    home.estimate = equity(l.asking_price, sorted[0].price, sorted[0].date, deposit, now);
+    if (!home.asking) { home.status = "no_asking_price"; return home; }
+    home.estimate = equity(home.asking, sorted[0].price, sorted[0].date, deposit, now);
     home.status = "rated";
     return home;
   });
@@ -297,9 +323,11 @@ module.exports = async function handler(req, res) {
       homes: homes.length, duplicates_removed: duplicatesRemoved, excluded_commercial_or_unpriced: excluded, excluded_new_build_developer: excludedNew,
       pages_fetched: pagesFetched, numbers_from_title: count((h) => h.address_from_title),
       non_standard_sale: count((h) => h.non_standard_sale),
+      epc_matched: count((h) => h.address_from_epc), epc_possible: count((h) => h.possible_addresses && !h.address_from_epc),
       two_agents: count((h) => h.signal === "two_agents"), two_agents_two_prices: count((h) => h.signal === "two_agents_two_prices"),
     },
     land_registry_error: lrError, paging_note: pagingNote,
+    epc: epcStats || { skipped: "EPC_API_TOKEN not set" },
     homes,
   });
 };
