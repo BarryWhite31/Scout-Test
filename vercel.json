@@ -1,5 +1,6 @@
 {
   "functions": {
-    "api/scout.js": { "maxDuration": 60 }
+    "api/scout.js": { "maxDuration": 60 },
+    "api/students.js": { "maxDuration": 60 }
   }
 }

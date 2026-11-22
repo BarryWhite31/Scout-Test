@@ -8,6 +8,12 @@ const DAY = 86400000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const normText = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
+// The register sometimes sends the dwelling type as an object, not text: fall back to our own word
+const label = (v, fallback) => {
+  if (typeof v === "string" && v.trim()) return v;
+  if (v && typeof v === "object") { const t = v.value || v.description || v.name || v.label; if (typeof t === "string" && t.trim()) return t; }
+  return { semi: "Semi-detached house", terrace: "Terraced house", detached: "Detached house" }[fallback] || "Property type";
+};
 
 async function epcFetch(token, path, params) {
   const url = new URL(EPC_BASE + path);
@@ -88,8 +94,8 @@ function score(listing, c, fresh, est) {
   const lk = listingKind(listing.type), ek = epcKind(c);
   if (lk.flat !== ek.flat) { s -= 40; why.push("flat/house mismatch"); }
   else if (lk.built && ek.built) {
-    if (lk.built === ek.built) { s += 20; why.push((c.dwelling_type || ek.built) + " matches"); }
-    else { s -= 25; why.push("type differs (" + (c.dwelling_type || ek.built) + ")"); }
+    if (lk.built === ek.built) { s += 20; why.push(label(c.dwelling_type, ek.built) + " matches"); }
+    else { s -= 25; why.push("type differs (" + label(c.dwelling_type, ek.built) + ")"); }
   }
   if (lk.bungalow !== ek.bungalow && lk.built) { s -= 10; }
   const hab = c.habitable_room_count, beds = listing.beds;

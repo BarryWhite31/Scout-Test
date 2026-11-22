@@ -1,5 +1,5 @@
 // Lease Option Scout: live search (PaTMa listings + Land Registry price paid + equity rating)
-// Settings needed in Vercel: PATMA_API_KEY and SCOUT_TEST_PASSWORD
+// Settings needed in Vercel: PATMA_API_KEY and SCOUT_TEST_PASSWORD (EPC_API_TOKEN optional)
 
 const { matchByEpc } = require("./_epcmatch.js");
 const PATMA = "https://app.patma.co.uk/api/prospector/v1/property-listing/";
@@ -158,21 +158,13 @@ function matchSales(listing, sales) {
 }
 
 // ---------- the search ----------
-module.exports = async function handler(req, res) {
-  res.setHeader("Cache-Control", "no-store");
-  if (req.method !== "POST") return res.status(405).json({ error: "Use the test page to run a search." });
-  const key = process.env.PATMA_API_KEY, pw = process.env.SCOUT_TEST_PASSWORD;
-  if (!key || !pw) return res.status(500).json({ error: "PATMA_API_KEY or SCOUT_TEST_PASSWORD is missing in Vercel." });
-
-  let b = req.body;
-  if (typeof b === "string") { try { b = JSON.parse(b); } catch (e) { b = {}; } }
-  b = b || {};
-  if (b.password !== pw) return res.status(401).json({ error: "Wrong test password." });
-
-  const postcode = String(b.postcode || "").toUpperCase().replace(/\s+/g, " ").trim();
-  if (!PC_RE.test(postcode)) return res.status(400).json({ error: "That doesn't look like a full UK postcode." });
-  const radius = [0.25, 0.5, 1, 2, 3, 5].includes(+b.radius) ? +b.radius : 1;
-  const deposit = [5, 10, 15, 25].includes(+b.deposit) ? +b.deposit : 10;
+// Shared by the test page (scout.js) and the student preview (students.js).
+// Returns { status, body }. maxPages caps PaTMa credits per search.
+async function runSearch(opts) {
+  const key = process.env.PATMA_API_KEY;
+  if (!key) return { status: 500, body: { error: "PATMA_API_KEY is missing in Vercel." } };
+  const { postcode, radius, deposit } = opts;
+  const maxPages = opts.maxPages || MAX_PAGES;
   const now = new Date();
 
   // 1. PaTMa: homes for sale (1 credit per page of 100, up to MAX_PAGES)
@@ -186,18 +178,18 @@ module.exports = async function handler(req, res) {
   let listings, pages, total, pagesFetched = 1, pagingNote = null;
   try {
     const j = await fetchPage(1);
-    if (j.status !== "success") return res.status(200).json({ error: "PaTMa didn't return listings.", patma: j });
+    if (j.status !== "success") return { status: 200, body: { error: "PaTMa didn't return listings.", patma: j } };
     listings = j.data.available_results || [];
     pages = j.data.number_of_pages; total = j.data.total_results_count;
-    for (let p = 2; p <= Math.min(pages || 1, MAX_PAGES); p++) {
+    for (let p = 2; p <= Math.min(pages || 1, maxPages); p++) {
       const jp = await fetchPage(p);
       if (jp.status !== "success" || !jp.data || jp.data.current_page !== p) { pagingNote = "PaTMa didn't return page " + p + "."; break; }
       listings = listings.concat(jp.data.available_results || []);
       pagesFetched = p;
     }
-    if (pages > MAX_PAGES) pagingNote = "Showing the first " + MAX_PAGES * 100 + " listings. Try a smaller radius.";
+    if (pages > maxPages) pagingNote = "Showing the first " + maxPages * 100 + " listings. Try a smaller radius.";
   } catch (e) {
-    return res.status(200).json({ error: "Couldn't reach PaTMa: " + e.message });
+    return { status: 200, body: { error: "Couldn't reach PaTMa: " + e.message } };
   }
   const before = listings.length;
   listings = listings.filter((l) => !l.commercial && l.asking_price != null && l.asking_price >= MIN_PRICE);
@@ -313,7 +305,7 @@ module.exports = async function handler(req, res) {
     if (x.estimate) return -1; if (y.estimate) return 1; return 0;
   });
   const count = (f) => homes.filter(f).length;
-  return res.status(200).json({
+  return { status: 200, body: {
     search: { postcode, radius, deposit, run_at: now.toISOString() },
     counts: {
       found: total, returned: homes.length, more_pages: pages > pagesFetched,
@@ -329,7 +321,39 @@ module.exports = async function handler(req, res) {
     land_registry_error: lrError, paging_note: pagingNote,
     epc: epcStats || { skipped: "EPC_API_TOKEN not set" },
     homes,
-  });
+  } };
+}
+
+// Validate a postcode, radius and deposit sent from a page
+function readSearch(b, radii) {
+  const postcode = String(b.postcode || "").toUpperCase().replace(/\s+/g, " ").trim();
+  if (!PC_RE.test(postcode)) return { error: "That doesn't look like a full UK postcode." };
+  const allowed = radii || [0.25, 0.5, 1, 2, 3, 5];
+  const radius = allowed.includes(+b.radius) ? +b.radius : 1;
+  const deposit = [5, 10, 15, 25].includes(+b.deposit) ? +b.deposit : 10;
+  return { postcode, radius, deposit };
+}
+function readBody(req) {
+  let b = req.body;
+  if (typeof b === "string") { try { b = JSON.parse(b); } catch (e) { b = {}; } }
+  return b || {};
+}
+
+// ---------- the test page's search ----------
+module.exports = async function handler(req, res) {
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method !== "POST") return res.status(405).json({ error: "Use the test page to run a search." });
+  const pw = process.env.SCOUT_TEST_PASSWORD;
+  if (!process.env.PATMA_API_KEY || !pw) return res.status(500).json({ error: "PATMA_API_KEY or SCOUT_TEST_PASSWORD is missing in Vercel." });
+  const b = readBody(req);
+  if (b.password !== pw) return res.status(401).json({ error: "Wrong test password." });
+  const q = readSearch(b);
+  if (q.error) return res.status(400).json({ error: q.error });
+  const out = await runSearch(q);
+  return res.status(out.status).json(out.body);
 };
 
+module.exports.runSearch = runSearch;
+module.exports.readSearch = readSearch;
+module.exports.readBody = readBody;
 module.exports._test = { norm, matchSales, equity, rating, homeKey, portalOf, addressFromLabel, isDeveloperNewHome };
